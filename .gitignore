@@ -1,0 +1,10 @@
+venv/
+.venv/
+env/
+cuda/
+openwebtext/
+tokenizer.json
+cuda/
+*.pkl
+train_split.txt
+val_spilt.txt
