@@ -5,8 +5,10 @@ import random
 import pickle
 import argparse
 from tokenizers import Tokenizer
+import time
 
 tokenizer = Tokenizer.from_file("tokenizer.json")
+
 def parse_args():
     parser = argparse.ArgumentParser(description = "This is a demo program")
     parser.add_argument('-batch_size',type = int,required = True,help = 'Please provide a batch size')
@@ -21,32 +23,39 @@ elif torch.backends.mps.is_available():
 else:
     device = "cpu"
 print(device)
-chars = ""
-with open('vocab.txt','r', encoding='utf-8') as f:
-    text= f.read()
-chars = sorted(list(set(text)))
-print(chars)
 batch_size = args.batch_size
-block_size = 256
-vocab_size = len(chars)
-max_inters = 55000
+block_size = 512
+max_inters = 75000
 learning_rate = 1e-4
-eval_inters = 250
+eval_inters = 100
 dropout = 0.2
 n_embed = 512
 n_layer = 8
 n_head = 8
+text = ""
+vocab_size = tokenizer.get_vocab_size()
+print(vocab_size)
 
-string_to_int = { ch: i for i, ch in enumerate(chars)}
-int_to_string = { i: ch for i, ch in enumerate(chars)}
-encode = lambda s : [string_to_int[c] for c in s]
-decode = lambda l : '' .join([int_to_string [i] for i in l])
-data = torch.tensor(encode(text), dtype = torch.long)
-print(data[:100])
+def encode(text):
+    return tokenizer.encode(text).ids
+
+def decode(tokens):
+    return tokenizer.decode(tokens)
+print("Tokenizing...")
+t1 = time.time()
+data = torch.tensor(
+    encode(text),
+    dtype=torch.long
+)
+
+print(data[:50])
 
 n = int(0.8 * len(data))
 train_data = data[:n]
 val_data = data[n:]
+
+##
+
 @torch.no_grad()
 def estimate_loss():
     out = {}
@@ -154,7 +163,7 @@ class GPTLanguageModel(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.Embedding):
+        elif isinstance(module, nn.Embedding):
                torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
                 
         
@@ -193,9 +202,11 @@ class GPTLanguageModel(nn.Module):
             #focus only on last time step
             logits = logits[:, -1, :] # Becomes (B, C)
             #apply softmax to get possibities/probaities
-            probs = F.softmax(logits, dim = -1) #(B,C)
+            temperature = 0.8
+            logits = logits / temperature
+            probs = F.softmax(logits, dim=-1)
+            index_next = torch.multinomial(probs,num_samples=1) #(B,C)
             #sample from distribution
-            index_next = torch.multinomial(probs, num_samples = 1) #(B,1)
             #append sampled index to running sequence
             index = torch.cat((index,index_next), dim = 1) #(B, T +1)
         return index
@@ -209,43 +220,52 @@ y = train_data[1:block_size + 1]
 #memory map for using small snippets of text from a single file at a time
 def random_chunk(spilt):
     filename = "train_split.txt" if spilt == "train" else "val_spilt.txt"
-    with open(filename, 'rb') as f:
-       with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-            #Determine filesize and a random position to start reading
-            file_size = len(mm)
-            start_pos = random.randint(0, (file_size) - block_size * batch_size)
-            #Seek  the random position and read the block of text
-            mm.seek(start_pos)
-            block = mm.read(block_size * batch_size -1)
-            #Decode the block to a string, ignoring any invalid byte sequence
-            decoded_block = block.decode('utf-8', errors = 'ignore').replace('\r',' ')
 
-            # Train and test spilts
-            data = torch.tensor(encode(decoded_block), dtype = torch.long)
-    return data
+    with open(filename, "rb") as f:
+        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+
+            file_size = len(mm)
+            start_pos = random.randint(0,max(0, file_size - 200000))
+            mm.seek(start_pos)
+            block = mm.read(200000)
+            decoded_block = block.decode(encoding="utf-8",errors="ignore")
+            token_ids = encode(decoded_block)
+            
+            return torch.tensor(token_ids,dtype=torch.long )
     
 
 
 def get_batch(split):
-    data = random_chunk(split)
-    ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([data[i:i + block_size] for i in ix])
-    y = torch.stack([data[i +1:i + block_size+ 1] for i in ix])
-    x = x.to(device)
-    y = y.to(device)
-    return x,y
+
+    while True:
+        data = random_chunk(split)
+
+        if len(data) > block_size + 1:
+            break
+
+    ix = torch.randint(0,len(data) - block_size,(batch_size,))
+    x = torch.stack([data[i:i + block_size]for i in ix])
+
+    y = torch.stack([data[i + 1:i + block_size + 1]for i in ix])
+    
+    return x.to(device), y.to(device)
 x,y = get_batch('train')
 print(x)
 print()
 print(y)
 
 # Create Pytorch Optimizer
+start = time.time()
 optimizer = torch.optim.AdamW(m.parameters(), lr = learning_rate)
+
 for inter in range(max_inters):
-    
     if inter % eval_inters == 0:
         losses = estimate_loss()
         print(f'step {inter }, losses{losses}')
+        elapsed = time.time() - start
+        print(f"{elapsed/100:.3f} sec/step")
+        start = time.time()
+       
     
     #sample batch of data
     xb, yb = get_batch('train')

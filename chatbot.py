@@ -4,6 +4,8 @@ import mmap
 import random
 import pickle
 import argparse
+from tokenizers import Tokenizer
+tokenizer = Tokenizer.from_file("tokenizer.json")
 def parse_args():
     
     parser = argparse.ArgumentParser(description = "This is a demo program")
@@ -19,12 +21,23 @@ elif torch.backends.mps.is_available():
 else:
     device = "cpu"
 chars = ""
-with open('vocab.txt','r', encoding='utf-8') as f:
-    text= f.read()
+with open("train_split.txt", "r", encoding="utf-8") as f:
+    text = f.read()
+
+def encode(text):
+    return tokenizer.encode(text).ids
+
+def decode(tokens):
+    return tokenizer.decode(tokens)
+
+data = torch.tensor(
+    encode(text),
+    dtype=torch.long
+)
 chars = sorted(list(set(text)))
 batch_size = args.batch_size
-block_size = 256
-vocab_size = len(chars)
+block_size = 512
+vocab_size =tokenizer.get_vocab_size()
 max_inters = 10000
 learning_rate = 3e-4
 eval_inters = 250
@@ -33,11 +46,6 @@ n_embed = 512
 n_layer = 8
 n_head = 8
 
-string_to_int = { ch: i for i, ch in enumerate(chars)}
-int_to_string = { i: ch for i, ch in enumerate(chars)}
-encode = lambda s : [string_to_int[c] for c in s]
-decode = lambda l : '' .join([int_to_string [i] for i in l])
-data = torch.tensor(encode(text), dtype = torch.long)
 
 n = int(0.8 * len(data))
 train_data = data[:n]
@@ -135,7 +143,7 @@ class GPTLanguageModel(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.Embedding):
+        elif isinstance(module, nn.Embedding):
                torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
                 
         
@@ -196,9 +204,12 @@ with open('model-01.pkl', 'rb') as f:
     m = pickle.load(f)
     model = m.to(device)
 print("loaded")
+print(len(data))
 
 while True:
     prompt = input("Prompt: \n")
-    context = torch.tensor(encode(prompt), dtype = torch.long, device=device)
-    generated_chars = decode(m.generate(context.unsqueeze(0), max_new_tokens=750)[0].tolist())
-    print(f'Generated text: \n{generated_chars}')
+    prompt_ids = tokenizer.encode(prompt).ids
+    context = torch.tensor( prompt_ids,dtype=torch.long,device=device)
+    generated_ids = m.generate(context.unsqueeze(0),max_new_tokens=300)[0].tolist()
+    generated_text = tokenizer.decode(generated_ids)
+    print(generated_text)

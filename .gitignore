@@ -8,3 +8,7 @@ cuda/
 *.pkl
 train_split.txt
 val_spilt.txt
+*.txt
+.ipynb_checkpoints/vocab-checkpoint.txt
+vocab.txt
+wizard_of_oz.txt
